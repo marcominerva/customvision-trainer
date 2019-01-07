@@ -40,24 +40,7 @@ namespace CustomVisionTrainer
 
             try
             {
-                await DeleteImagesAndTagsAsync(options, trainingApi);
-
-                // Creates the string for resized images.
-                //string resizeString = null;
-                //if (options.Width.GetValueOrDefault() > 0)
-                //{
-                //    resizeString += $"width={options.Width}&";
-                //}
-                //if (options.Height.GetValueOrDefault() > 0)
-                //{
-                //    resizeString += $"height={options.Height}&";
-                //}
-
-                //if (!string.IsNullOrWhiteSpace(resizeString))
-                //{
-                //    resizeString += "crop=auto&scale=both";
-                //}
-
+                await DeleteImagesAndTagsAsync(options, trainingApi);                
                 foreach (var dir in Directory.EnumerateDirectories(fullFolder).Where(f => !Path.GetFileName(f).StartsWith("!")))
                 {
                     var tagName = Path.GetFileName(dir).ToLower();
@@ -79,23 +62,36 @@ namespace CustomVisionTrainer
                         // Resizes the image before sending it to the service.
                         using (var input = new MemoryStream(File.ReadAllBytes(image)))
                         {
+                            var retries = new[] {
+                                TimeSpan.FromSeconds(1),
+                                TimeSpan.FromSeconds(2),
+                                TimeSpan.FromSeconds(3),
+                                TimeSpan.FromSeconds(5),
+                                TimeSpan.FromSeconds(10),
+                                TimeSpan.FromSeconds(15),
+                                TimeSpan.FromSeconds(30),
+                                TimeSpan.FromSeconds(60)
+                            };
+
                             if (options.Width.GetValueOrDefault() > 0 || options.Height.GetValueOrDefault() > 0)
                             {
                                 using (var output = await ResizeImageAsync(input, options.Width.GetValueOrDefault(), options.Height.GetValueOrDefault()))
                                 {
-                                    Policy
-                                        .Handle<Exception>()
-                                        .Retry(3, async (exception, retryCount, context) =>
-                                        {
-                                            await trainingApi.CreateImagesFromDataAsync(options.ProjectId, output, new List<string>() { tag.Id.ToString() });
-                                        });
+                                    await Policy
+                                       .Handle<Exception>()
+                                       .WaitAndRetryAsync(retries)
+                                       .ExecuteAsync(async () =>
+                                       {
+                                           await trainingApi.CreateImagesFromDataAsync(options.ProjectId, output, new List<string>() { tag.Id.ToString() });
+                                       });
                                 }
                             }
                             else
                             {
-                                Policy
+                                await Policy
                                     .Handle<Exception>()
-                                    .Retry(3, async (exception, retryCount, context) =>
+                                    .WaitAndRetryAsync(retries)
+                                    .ExecuteAsync(async () =>
                                     {
                                         await trainingApi.CreateImagesFromDataAsync(options.ProjectId, input, new List<string>() { tag.Id.ToString() });
                                     });
@@ -153,8 +149,11 @@ namespace CustomVisionTrainer
         {
             // Delete all tagged images.
             Console.WriteLine("Deleting existing images...");
-            var taggedImages = await trainingApi.GetTaggedImagesAsync(options.ProjectId);
-            await trainingApi.DeleteImagesAsync(options.ProjectId, taggedImages.Select(i => i.Id.ToString()).ToList());
+            IList<Microsoft.Cognitive.CustomVision.Training.Models.Image> taggedImages;
+            while ((taggedImages = await trainingApi.GetTaggedImagesAsync(options.ProjectId, take: 50, skip: 0)).Any())
+            {
+                await trainingApi.DeleteImagesAsync(options.ProjectId, taggedImages.Select(i => i.Id.ToString()).ToList());
+            }
 
             // Delete all tags.
             Console.WriteLine("Deleting existing tags...");
