@@ -40,10 +40,19 @@ namespace CustomVisionTrainer
 
             try
             {
-                await DeleteImagesAndTagsAsync(options, trainingApi);                
+                //await DeleteImagesAndTagsAsync(options, trainingApi);                
                 foreach (var dir in Directory.EnumerateDirectories(fullFolder).Where(f => !Path.GetFileName(f).StartsWith("!")))
                 {
                     var tagName = Path.GetFileName(dir).ToLower();
+                    IList<Microsoft.Cognitive.CustomVision.Training.Models.Image> imagesAlreadyExists = new List<Microsoft.Cognitive.CustomVision.Training.Models.Image>();
+                    IList<Microsoft.Cognitive.CustomVision.Training.Models.Image> imagesAlreadyExistsTmp = new List<Microsoft.Cognitive.CustomVision.Training.Models.Image>();
+                    while ((imagesAlreadyExistsTmp = await trainingApi.GetTaggedImagesAsync(options.ProjectId, tagIds: new[] { tagName})).Any())
+                    {
+                        foreach (var item in imagesAlreadyExistsTmp)
+                        {
+                            imagesAlreadyExists.Add(item);
+                        }
+                    }
 
                     Console.WriteLine($"\nCreating tag '{tagName}'...");
                     var tag = await trainingApi.CreateTagAsync(options.ProjectId, tagName);
@@ -54,15 +63,18 @@ namespace CustomVisionTrainer
                                || s.EndsWith(".png", StringComparison.InvariantCultureIgnoreCase)
                                || s.EndsWith(".bmp", StringComparison.InvariantCultureIgnoreCase)).ToList();
 
+                    
                     Parallel.ForEach(images, async (image) =>
                     {
                         var imageName = Path.GetFileName(image);
-                        Console.WriteLine($"Uploading image {imageName}...");
-
-                        // Resizes the image before sending it to the service.
-                        using (var input = new MemoryStream(File.ReadAllBytes(image)))
+                        if (!imagesAlreadyExists.Any(x => x.ImageUri == imageName))
                         {
-                            var retries = new[] {
+                            Console.WriteLine($"Uploading image {imageName}...");
+
+                            // Resizes the image before sending it to the service.
+                            using (var input = new MemoryStream(File.ReadAllBytes(image)))
+                            {
+                                var retries = new[] {
                                 TimeSpan.FromSeconds(1),
                                 TimeSpan.FromSeconds(2),
                                 TimeSpan.FromSeconds(3),
@@ -73,29 +85,35 @@ namespace CustomVisionTrainer
                                 TimeSpan.FromSeconds(60)
                             };
 
-                            if (options.Width.GetValueOrDefault() > 0 || options.Height.GetValueOrDefault() > 0)
-                            {
-                                using (var output = await ResizeImageAsync(input, options.Width.GetValueOrDefault(), options.Height.GetValueOrDefault()))
+                                if (options.Width.GetValueOrDefault() > 0 || options.Height.GetValueOrDefault() > 0)
+                                {
+                                    using (var output = await ResizeImageAsync(input, options.Width.GetValueOrDefault(), options.Height.GetValueOrDefault()))
+                                    {
+                                        await Policy
+                                           .Handle<Exception>()
+                                           .WaitAndRetryAsync(retries)
+                                           .ExecuteAsync(async () =>
+                                           {
+
+                                               await trainingApi.CreateImagesFromDataAsync(options.ProjectId, output, new List<string>() { tag.Id.ToString() });
+                                           });
+                                    }
+                                }
+                                else
                                 {
                                     await Policy
-                                       .Handle<Exception>()
-                                       .WaitAndRetryAsync(retries)
-                                       .ExecuteAsync(async () =>
-                                       {
-                                           await trainingApi.CreateImagesFromDataAsync(options.ProjectId, output, new List<string>() { tag.Id.ToString() });
-                                       });
+                                        .Handle<Exception>()
+                                        .WaitAndRetryAsync(retries)
+                                        .ExecuteAsync(async () =>
+                                        {
+                                            await trainingApi.CreateImagesFromDataAsync(options.ProjectId, input, new List<string>() { tag.Id.ToString() });
+                                        });
                                 }
                             }
-                            else
-                            {
-                                await Policy
-                                    .Handle<Exception>()
-                                    .WaitAndRetryAsync(retries)
-                                    .ExecuteAsync(async () =>
-                                    {
-                                        await trainingApi.CreateImagesFromDataAsync(options.ProjectId, input, new List<string>() { tag.Id.ToString() });
-                                    });
-                            }
+                        }
+                        else
+                        {
+                            Console.WriteLine($"Image already exist {imageName}...");
                         }
                     });
                 }
