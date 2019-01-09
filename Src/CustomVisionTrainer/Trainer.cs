@@ -1,5 +1,7 @@
-﻿using ImageMagick;
+﻿using CustomVisionTrainer.Storage;
+using ImageMagick;
 using Microsoft.Cognitive.CustomVision.Training;
+using Microsoft.Cognitive.CustomVision.Training.Models;
 using Polly;
 using System;
 using System.Collections.Generic;
@@ -11,16 +13,28 @@ namespace CustomVisionTrainer
 {
     public static class Trainer
     {
+        public static TimeSpan[] retries = new[] {
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromSeconds(20),
+            TimeSpan.FromSeconds(30),
+            TimeSpan.FromSeconds(50),
+            TimeSpan.FromSeconds(100),
+            TimeSpan.FromSeconds(150),
+            TimeSpan.FromSeconds(300),
+            TimeSpan.FromSeconds(600)
+        };
         public static async Task TrainAsync(ParsingOptions options)
         {
             // Create the Api, passing in the training key
             var trainingApi = new TrainingApi { ApiKey = options.TrainingKey };
+            CognitiveServiceTrainerStorage storageImages = new CognitiveServiceTrainerStorage();
 
             if (options.Delete)
             {
                 try
                 {
                     await DeleteImagesAndTagsAsync(options, trainingApi);
+                    storageImages.DeleteDB();
                     Console.WriteLine("Images and tags successfully deleted.");
                 }
                 catch
@@ -44,10 +58,13 @@ namespace CustomVisionTrainer
                 foreach (var dir in Directory.EnumerateDirectories(fullFolder).Where(f => !Path.GetFileName(f).StartsWith("!")))
                 {
                     var tagName = Path.GetFileName(dir).ToLower();
+                    Console.WriteLine($"\nCheck latest images uploaded '{tagName}'...");
                     IList<Microsoft.Cognitive.CustomVision.Training.Models.Image> imagesAlreadyExists = new List<Microsoft.Cognitive.CustomVision.Training.Models.Image>();
                     IList<Microsoft.Cognitive.CustomVision.Training.Models.Image> imagesAlreadyExistsTmp = new List<Microsoft.Cognitive.CustomVision.Training.Models.Image>();
-                    while ((imagesAlreadyExistsTmp = await trainingApi.GetTaggedImagesAsync(options.ProjectId, tagIds: new[] { tagName})).Any())
+                    int skip = 0;
+                    while ((imagesAlreadyExistsTmp = await trainingApi.GetTaggedImagesAsync(options.ProjectId, tagIds: new[] { tagName}, take: 50, skip: skip)).Any())
                     {
+                        skip += 50;
                         foreach (var item in imagesAlreadyExistsTmp)
                         {
                             imagesAlreadyExists.Add(item);
@@ -55,7 +72,24 @@ namespace CustomVisionTrainer
                     }
 
                     Console.WriteLine($"\nCreating tag '{tagName}'...");
-                    var tag = await trainingApi.CreateTagAsync(options.ProjectId, tagName);
+                    var tagExist = storageImages.FindTag(tagName);
+                    Tag tag = null;
+                    if (tagExist == null)
+                    {
+                        tag = await trainingApi.CreateTagAsync(options.ProjectId, tagName);
+                        storageImages.InsertTag(new Storage.Collections.StorageTag { IdCustomVision = tag.Id, TagName = tag.Name });
+                    }
+                    else
+                    {
+                        if ((await trainingApi.GetTagAsync(options.ProjectId, tagExist.IdCustomVision)) == null)
+                        {
+                            await trainingApi.DeleteTagAsync(options.ProjectId, tagExist.IdCustomVision);
+                            tag = await trainingApi.CreateTagAsync(options.ProjectId, tagName);
+                            storageImages.InsertTag(new Storage.Collections.StorageTag { IdCustomVision = tag.Id, TagName = tag.Name });
+                        }
+                        else
+                            tag = new Tag(tagExist.IdCustomVision, tagName);
+                    }
 
                     var images = Directory.EnumerateFiles(dir, "*.*", SearchOption.AllDirectories)
                                .Where(s => s.EndsWith(".jpg", StringComparison.InvariantCultureIgnoreCase)
@@ -64,27 +98,17 @@ namespace CustomVisionTrainer
                                || s.EndsWith(".bmp", StringComparison.InvariantCultureIgnoreCase)).ToList();
 
                     
-                    Parallel.ForEach(images, async (image) =>
+                    Parallel.ForEach(images, new ParallelOptions { MaxDegreeOfParallelism = 5 }, async (image) =>
                     {
                         var imageName = Path.GetFileName(image);
-                        if (!imagesAlreadyExists.Any(x => x.ImageUri == imageName))
+                        var storageImage = storageImages.FindImage(image);
+                        if(storageImage == null || !imagesAlreadyExists.Any(x => x.Id == storageImage.IdCustomVision))
                         {
-                            Console.WriteLine($"Uploading image {imageName}...");
+                            
 
                             // Resizes the image before sending it to the service.
                             using (var input = new MemoryStream(File.ReadAllBytes(image)))
                             {
-                                var retries = new[] {
-                                TimeSpan.FromSeconds(1),
-                                TimeSpan.FromSeconds(2),
-                                TimeSpan.FromSeconds(3),
-                                TimeSpan.FromSeconds(5),
-                                TimeSpan.FromSeconds(10),
-                                TimeSpan.FromSeconds(15),
-                                TimeSpan.FromSeconds(30),
-                                TimeSpan.FromSeconds(60)
-                            };
-
                                 if (options.Width.GetValueOrDefault() > 0 || options.Height.GetValueOrDefault() > 0)
                                 {
                                     using (var output = await ResizeImageAsync(input, options.Width.GetValueOrDefault(), options.Height.GetValueOrDefault()))
@@ -92,11 +116,7 @@ namespace CustomVisionTrainer
                                         await Policy
                                            .Handle<Exception>()
                                            .WaitAndRetryAsync(retries)
-                                           .ExecuteAsync(async () =>
-                                           {
-
-                                               await trainingApi.CreateImagesFromDataAsync(options.ProjectId, output, new List<string>() { tag.Id.ToString() });
-                                           });
+                                           .ExecuteAsync(async () => await UploadImageAsync(output, imageName, image, tag));
                                     }
                                 }
                                 else
@@ -104,10 +124,7 @@ namespace CustomVisionTrainer
                                     await Policy
                                         .Handle<Exception>()
                                         .WaitAndRetryAsync(retries)
-                                        .ExecuteAsync(async () =>
-                                        {
-                                            await trainingApi.CreateImagesFromDataAsync(options.ProjectId, input, new List<string>() { tag.Id.ToString() });
-                                        });
+                                        .ExecuteAsync(async () => await UploadImageAsync(input, imageName, image, tag));
                                 }
                             }
                         }
@@ -141,7 +158,54 @@ namespace CustomVisionTrainer
             {
                 Console.WriteLine($"\nUnexpected error: {ex.GetBaseException()?.Message}.\n");
             }
+
+
+
+
+
+
+            async Task UploadImageAsync(Stream input, string imageName, string image, Tag tag)
+            {
+                ImageCreateSummary reponseCognitiveService;
+                if (input.Position > 0)
+                    input.Position = 0;
+
+                reponseCognitiveService = await trainingApi.CreateImagesFromDataAsync(options.ProjectId, input, new List<string>() { tag.Id.ToString() });
+                if (reponseCognitiveService.Images != null)
+                {
+                    foreach (var img in reponseCognitiveService.Images)
+                    {
+                        // https://docs.microsoft.com/en-us/rest/api/cognitiveservices/customvisiontraining/createimagesfrompredictions/createimagesfrompredictions
+                        if ((img.Status == "OK" || img.Status == "OKDuplicate") && img.Image != null)
+                        {
+                            Console.WriteLine($"Uploaded image {imageName}...");
+                            var uploadedImage = img.Image;
+                            var tagsToStore = uploadedImage.Tags != null
+                                ? uploadedImage.Tags.Select(x => new Storage.Collections.StorageImageTag() { Created = x.Created, TagId = x.TagId }).ToList()
+                                : null;
+                            storageImages.InsertImage(new Storage.Collections.StorageImage()
+                            {
+                                FullFileName = image,
+                                IdCustomVision = uploadedImage.Id,
+                                ImageUri = uploadedImage.ImageUri,
+                                Created = uploadedImage.Created,
+                                Height = uploadedImage.Height,
+                                Tags = tagsToStore,
+                                ThumbnailUri = uploadedImage.ThumbnailUri,
+                                Width = uploadedImage.Width
+                            });
+                        }
+                        else
+                        {
+                            Console.WriteLine($"API bad response: {img.Status }");
+                            throw new InvalidOperationException($"API bad response: {img.Status }");
+                        }
+                    }
+                }
+            }
         }
+
+        
 
         private static Task<Stream> ResizeImageAsync(Stream image, int width, int height)
         {
