@@ -35,4 +35,7 @@
       <Version>4.3.4</Version>
     </PackageReference>
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CustomVisionTrainer.Storage\CustomVisionTrainer.Storage.csproj" />
+  </ItemGroup>
 </Project>
