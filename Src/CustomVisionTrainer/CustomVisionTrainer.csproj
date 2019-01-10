@@ -4,11 +4,19 @@
     <OutputType>Exe</OutputType>
     <TargetFramework>netcoreapp2.2</TargetFramework>
     <Authors>Marco Minerva</Authors>
-    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
     <Copyright>Marco Minerva 2019</Copyright>
     <RepositoryUrl>https://github.com/marcominerva/customvision-trainer</RepositoryUrl>
     <RepositoryType>GitHub</RepositoryType>
     <LangVersion>7.3</LangVersion>
+    
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>cvtrainer</ToolCommandName>
+    <PackageOutputPath>./tool_release</PackageOutputPath>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+    <NoWarn>NU1701;NU1702</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="CommandLineArgumentsParser">
