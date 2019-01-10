@@ -97,42 +97,45 @@ namespace CustomVisionTrainer
                                || s.EndsWith(".png", StringComparison.InvariantCultureIgnoreCase)
                                || s.EndsWith(".bmp", StringComparison.InvariantCultureIgnoreCase)).ToList();
 
-                    
-                    Parallel.ForEach(images, new ParallelOptions { MaxDegreeOfParallelism = 5 }, async (image) =>
+                    List<ImageDto> tempImages = new List<ImageDto>();
+                    for (int i = 0; i < images.Count; i++)
                     {
+                        Stream imageToUpload = null;
+                        string image = images.ElementAt(i);
                         var imageName = Path.GetFileName(image);
                         var storageImage = storageImages.FindImage(image);
-                        if(storageImage == null || !imagesAlreadyExists.Any(x => x.Id == storageImage.IdCustomVision))
+                        if (storageImage == null || !imagesAlreadyExists.Any(x => x.Id == storageImage.IdCustomVision))
                         {
-                            
-
                             // Resizes the image before sending it to the service.
                             using (var input = new MemoryStream(File.ReadAllBytes(image)))
                             {
                                 if (options.Width.GetValueOrDefault() > 0 || options.Height.GetValueOrDefault() > 0)
-                                {
-                                    using (var output = await ResizeImageAsync(input, options.Width.GetValueOrDefault(), options.Height.GetValueOrDefault()))
-                                    {
-                                        await Policy
-                                           .Handle<Exception>()
-                                           .WaitAndRetryAsync(retries)
-                                           .ExecuteAsync(async () => await UploadImageAsync(output, imageName, image, tag));
-                                    }
-                                }
+                                    imageToUpload = await ResizeImageAsync(input, options.Width.GetValueOrDefault(), options.Height.GetValueOrDefault());
                                 else
+                                    imageToUpload = input;
+                                
+                                tempImages.Add(new ImageDto
                                 {
-                                    await Policy
-                                        .Handle<Exception>()
-                                        .WaitAndRetryAsync(retries)
-                                        .ExecuteAsync(async () => await UploadImageAsync(input, imageName, image, tag));
-                                }
+                                    FullName = image,
+                                    FileName = imageName,
+                                    Content = imageToUpload.ToByteArray(),
+                                    Tag = tag
+                                });
+                                imageToUpload.Dispose();
                             }
                         }
                         else
                         {
                             Console.WriteLine($"Image already exist {imageName}...");
                         }
-                    });
+                        //Persist batch images
+                        if (tempImages.Count % 32 == 0 || i == images.Count - 1)
+                        {
+                            await UploadImagesAsync(tempImages);
+                            tempImages.Clear();
+                            tempImages.Capacity = 0;
+                        }
+                    }
                 }
 
                 // Now there are images with tags start training the project
@@ -161,7 +164,58 @@ namespace CustomVisionTrainer
 
 
 
-
+            async Task UploadImagesAsync(List<ImageDto> images)
+            {
+                ImageFileCreateBatch imageFileCreateBatch = new ImageFileCreateBatch();
+                imageFileCreateBatch.Images = new List<ImageFileCreateEntry>();
+                foreach (var img in images)
+                {
+                    imageFileCreateBatch.Images.Add(new ImageFileCreateEntry
+                    {
+                        Name = img.FileName,
+                        TagIds = new [] { img.Tag.Id },
+                        Contents = img.Content
+                    });
+                    Console.WriteLine($"Uploading image {img.FileName}...");
+                }
+                await Policy
+                    .Handle<Exception>()
+                    .WaitAndRetryAsync(retries)
+                    .ExecuteAsync(async () =>
+                    {
+                        ImageCreateSummary reponseCognitiveService = await trainingApi.CreateImagesFromFilesAsync(options.ProjectId, imageFileCreateBatch);
+                        if (reponseCognitiveService.Images != null)
+                        {
+                            for (int i = 0; i < reponseCognitiveService.Images.Count; i++)
+                            {
+                                var img = reponseCognitiveService.Images.ElementAt(i);
+                                // https://docs.microsoft.com/en-us/rest/api/cognitiveservices/customvisiontraining/createimagesfrompredictions/createimagesfrompredictions
+                                if ((img.Status == "OK" || img.Status == "OKDuplicate") && img.Image != null)
+                                {
+                                    var uploadedImage = img.Image;
+                                    var tagsToStore = uploadedImage.Tags?.Select(x => new Storage.Collections.StorageImageTag() { Created = x.Created, TagId = x.TagId }).ToList();
+                                    storageImages.InsertImage(new Storage.Collections.StorageImage()
+                                    {
+                                        FullFileName = imageFileCreateBatch.Images.ElementAt(i).Name,
+                                        IdCustomVision = uploadedImage.Id,
+                                        ImageUri = uploadedImage.ImageUri,
+                                        Created = uploadedImage.Created,
+                                        Height = uploadedImage.Height,
+                                        Tags = tagsToStore,
+                                        ThumbnailUri = uploadedImage.ThumbnailUri,
+                                        Width = uploadedImage.Width
+                                    });
+                                }
+                                else
+                                {
+                                    Console.WriteLine($"API bad response: {img.Status }");
+                                    throw new InvalidOperationException($"API bad response: {img.Status }");
+                                }
+                            }
+                        }
+                    });
+                await Task.Delay(500);
+            }
 
 
             async Task UploadImageAsync(Stream input, string imageName, string image, Tag tag)
@@ -205,7 +259,20 @@ namespace CustomVisionTrainer
             }
         }
 
-        
+        public static byte[] ToByteArray(this Stream input)
+        {
+            input.Position = 0;
+            byte[] buffer = new byte[16 * 1024];
+            using (MemoryStream ms = new MemoryStream())
+            {
+                int read;
+                while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    ms.Write(buffer, 0, read);
+                }
+                return ms.ToArray();
+            }
+        }
 
         private static Task<Stream> ResizeImageAsync(Stream image, int width, int height)
         {
