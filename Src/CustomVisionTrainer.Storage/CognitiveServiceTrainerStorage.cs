@@ -20,19 +20,19 @@ namespace CustomVisionTrainer.Storage
             _tagCollection = db.GetCollection<StorageTag>(nameof(StorageTag));
         }
 
-        public StorageImage FindImage(string fullFileName)
+        public StorageImage FindImage(string fullFileName, Guid projectId)
         {
             lock (dbLock)
             {
-                return _storageCollection.FindOne(x => x.FullFileName == fullFileName);
+                return _storageCollection.FindOne(x => x.FullFileName == fullFileName && x.ProjectId == projectId);
             }           
         }
 
-        public StorageTag FindTag(string tagName)
+        public StorageTag FindTag(string tagName, Guid projectId)
         {
             lock (dbLock)
             {
-                return _tagCollection.FindOne(x => x.TagName == tagName);
+                return _tagCollection.FindOne(x => x.TagName == tagName && x.ProjectId == projectId);
             }
         }
 
@@ -42,6 +42,7 @@ namespace CustomVisionTrainer.Storage
             {
                 _storageCollection.Insert(image);
                 _storageCollection.EnsureIndex(x => x.FullFileName);
+                _storageCollection.EnsureIndex(x => x.ProjectId);
             }
         }
 
@@ -51,6 +52,7 @@ namespace CustomVisionTrainer.Storage
             {
                 _tagCollection.Insert(tag);
                 _tagCollection.EnsureIndex(x => x.TagName);
+                _tagCollection.EnsureIndex(x => x.ProjectId);
             }
         }
 
