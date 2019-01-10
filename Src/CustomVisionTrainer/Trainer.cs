@@ -40,8 +40,8 @@ namespace CustomVisionTrainer
                 catch
                 {
                 }
-
-                return;
+                if(string.IsNullOrEmpty(options.Folder))
+                    return;
             }
 
             var fullFolder = Path.GetFullPath(options.Folder);
@@ -72,20 +72,20 @@ namespace CustomVisionTrainer
                     }
 
                     Console.WriteLine($"\nCreating tag '{tagName}'...");
-                    var tagExist = storageImages.FindTag(tagName);
+                    var tagExist = storageImages.FindTag(tagName, options.ProjectId);
                     Tag tag = null;
                     if (tagExist == null)
                     {
                         tag = await trainingApi.CreateTagAsync(options.ProjectId, tagName);
-                        storageImages.InsertTag(new Storage.Collections.StorageTag { IdCustomVision = tag.Id, TagName = tag.Name });
+                        storageImages.InsertTag(new Storage.Collections.StorageTag { IdCustomVision = tag.Id, TagName = tag.Name, ProjectId = options.ProjectId });
                     }
                     else
                     {
-                        if ((await trainingApi.GetTagAsync(options.ProjectId, tagExist.IdCustomVision)) == null)
+                        if (trainingApi.GetTag(tagExist.ProjectId, tagExist.IdCustomVision) == null)
                         {
                             await trainingApi.DeleteTagAsync(options.ProjectId, tagExist.IdCustomVision);
                             tag = await trainingApi.CreateTagAsync(options.ProjectId, tagName);
-                            storageImages.InsertTag(new Storage.Collections.StorageTag { IdCustomVision = tag.Id, TagName = tag.Name });
+                            storageImages.InsertTag(new Storage.Collections.StorageTag { IdCustomVision = tag.Id, TagName = tag.Name, ProjectId = options.ProjectId });
                         }
                         else
                             tag = new Tag(tagExist.IdCustomVision, tagName);
@@ -103,7 +103,7 @@ namespace CustomVisionTrainer
                         Stream imageToUpload = null;
                         string image = images.ElementAt(i);
                         var imageName = Path.GetFileName(image);
-                        var storageImage = storageImages.FindImage(image);
+                        var storageImage = storageImages.FindImage(image, options.ProjectId);
                         if (storageImage == null || !imagesAlreadyExists.Any(x => x.Id == storageImage.IdCustomVision))
                         {
                             // Resizes the image before sending it to the service.
@@ -129,7 +129,7 @@ namespace CustomVisionTrainer
                             Console.WriteLine($"Image already exist {imageName}...");
                         }
                         //Persist batch images
-                        if (tempImages.Count % 32 == 0 || i == images.Count - 1)
+                        if (tempImages.Count % 32 == 0 && tempImages.Any() || (i == images.Count - 1))
                         {
                             await UploadImagesAsync(tempImages);
                             tempImages.Clear();
@@ -172,7 +172,7 @@ namespace CustomVisionTrainer
                 {
                     imageFileCreateBatch.Images.Add(new ImageFileCreateEntry
                     {
-                        Name = img.FileName,
+                        Name = img.FullName,
                         TagIds = new [] { img.Tag.Id },
                         Contents = img.Content
                     });
@@ -193,9 +193,15 @@ namespace CustomVisionTrainer
                                 if ((img.Status == "OK" || img.Status == "OKDuplicate") && img.Image != null)
                                 {
                                     var uploadedImage = img.Image;
-                                    var tagsToStore = uploadedImage.Tags?.Select(x => new Storage.Collections.StorageImageTag() { Created = x.Created, TagId = x.TagId }).ToList();
+                                    var tagsToStore = uploadedImage.Tags?
+                                    .Select(x => new Storage.Collections.StorageImageTag()
+                                    {
+                                        Created = x.Created,
+                                        TagId = x.TagId
+                                    }).ToList();
                                     storageImages.InsertImage(new Storage.Collections.StorageImage()
                                     {
+                                        ProjectId = options.ProjectId,
                                         FullFileName = imageFileCreateBatch.Images.ElementAt(i).Name,
                                         IdCustomVision = uploadedImage.Id,
                                         ImageUri = uploadedImage.ImageUri,
@@ -215,47 +221,6 @@ namespace CustomVisionTrainer
                         }
                     });
                 await Task.Delay(500);
-            }
-
-
-            async Task UploadImageAsync(Stream input, string imageName, string image, Tag tag)
-            {
-                ImageCreateSummary reponseCognitiveService;
-                if (input.Position > 0)
-                    input.Position = 0;
-
-                reponseCognitiveService = await trainingApi.CreateImagesFromDataAsync(options.ProjectId, input, new List<string>() { tag.Id.ToString() });
-                if (reponseCognitiveService.Images != null)
-                {
-                    foreach (var img in reponseCognitiveService.Images)
-                    {
-                        // https://docs.microsoft.com/en-us/rest/api/cognitiveservices/customvisiontraining/createimagesfrompredictions/createimagesfrompredictions
-                        if ((img.Status == "OK" || img.Status == "OKDuplicate") && img.Image != null)
-                        {
-                            Console.WriteLine($"Uploaded image {imageName}...");
-                            var uploadedImage = img.Image;
-                            var tagsToStore = uploadedImage.Tags != null
-                                ? uploadedImage.Tags.Select(x => new Storage.Collections.StorageImageTag() { Created = x.Created, TagId = x.TagId }).ToList()
-                                : null;
-                            storageImages.InsertImage(new Storage.Collections.StorageImage()
-                            {
-                                FullFileName = image,
-                                IdCustomVision = uploadedImage.Id,
-                                ImageUri = uploadedImage.ImageUri,
-                                Created = uploadedImage.Created,
-                                Height = uploadedImage.Height,
-                                Tags = tagsToStore,
-                                ThumbnailUri = uploadedImage.ThumbnailUri,
-                                Width = uploadedImage.Width
-                            });
-                        }
-                        else
-                        {
-                            Console.WriteLine($"API bad response: {img.Status }");
-                            throw new InvalidOperationException($"API bad response: {img.Status }");
-                        }
-                    }
-                }
             }
         }
 

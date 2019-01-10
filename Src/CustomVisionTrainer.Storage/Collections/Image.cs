@@ -8,6 +8,7 @@ namespace CustomVisionTrainer.Storage.Collections
     {
         public int Id { get; set; }
         public Guid IdCustomVision { get; set; }
+        public Guid ProjectId { get; set; }
         public DateTime Created { get; set; }
         public int Width { get; set; }
         public int Height { get; set; }
@@ -25,6 +26,7 @@ namespace CustomVisionTrainer.Storage.Collections
 
     public class StorageTag
     {
+        public Guid ProjectId { get; set; }
         public int Id { get; set; }
         public Guid IdCustomVision { get; set; }
         public string TagName { get; set; }
