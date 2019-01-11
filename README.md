@@ -8,7 +8,7 @@ A small application that allows to automatically upload and  tag images for Cust
 | Specify the directory that contains the images to be used for training | **f** | folder |
 | Specify the width of the images | **w** | width |
 | Specify the height of the images | **h** | height |
-| Set to just delete images and tags and exits | **d** | delete |
+| If no folder is specified, delete images and tags and exits, otherwise delete images and tags and upload the images | **d** | delete |
 
 ### Installing the .NET CLI Tool
 In order to install the .NET CLI Tool version of this application, you need to simly type inside the command prompt the following command
@@ -35,3 +35,4 @@ In case you don't want this tool installed on your system any longer, you can re
 ```console
 dotnet tool uninstall -g CustomVisionTrainer
 ```
+=======
