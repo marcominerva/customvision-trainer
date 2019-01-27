@@ -10,7 +10,7 @@ namespace CustomVisionTrainer
         {
             var parser = new CommandLineParser.CommandLineParser();
             var options = new ParsingOptions();
-            
+
             try
             {
                 parser.ExtractArgumentAttributes(options);

@@ -8,31 +8,31 @@ namespace CustomVisionTrainer.Storage
     public class CognitiveServiceTrainerStorage : IDisposable
     {
         private LiteDatabase db;
-        private LiteCollection<StorageImage> _storageCollection;
-        private LiteCollection<StorageTag> _tagCollection;
+        private LiteCollection<StorageImage> storageCollection;
+        private LiteCollection<StorageTag> tagCollection;
         private readonly object dbLock = new object();
 
         public CognitiveServiceTrainerStorage()
         {
             db = new LiteDatabase(@"CognitiveServiceTrainerStorage.db");
-            
-            _storageCollection = db.GetCollection<StorageImage>(nameof(StorageImage));
-            _tagCollection = db.GetCollection<StorageTag>(nameof(StorageTag));
+
+            storageCollection = db.GetCollection<StorageImage>(nameof(StorageImage));
+            tagCollection = db.GetCollection<StorageTag>(nameof(StorageTag));
         }
 
         public StorageImage FindImage(string fullFileName, Guid projectId)
         {
             lock (dbLock)
             {
-                return _storageCollection.FindOne(x => x.FullFileName == fullFileName && x.ProjectId == projectId);
-            }           
+                return storageCollection.FindOne(x => x.FullFileName == fullFileName && x.ProjectId == projectId);
+            }
         }
 
         public StorageTag FindTag(string tagName, Guid projectId)
         {
             lock (dbLock)
             {
-                return _tagCollection.FindOne(x => x.TagName == tagName && x.ProjectId == projectId);
+                return tagCollection.FindOne(x => x.TagName == tagName && x.ProjectId == projectId);
             }
         }
 
@@ -40,9 +40,9 @@ namespace CustomVisionTrainer.Storage
         {
             lock (dbLock)
             {
-                _storageCollection.Insert(image);
-                _storageCollection.EnsureIndex(x => x.FullFileName);
-                _storageCollection.EnsureIndex(x => x.ProjectId);
+                storageCollection.Insert(image);
+                storageCollection.EnsureIndex(x => x.FullFileName);
+                storageCollection.EnsureIndex(x => x.ProjectId);
             }
         }
 
@@ -50,17 +50,17 @@ namespace CustomVisionTrainer.Storage
         {
             lock (dbLock)
             {
-                _tagCollection.Insert(tag);
-                _tagCollection.EnsureIndex(x => x.TagName);
-                _tagCollection.EnsureIndex(x => x.ProjectId);
+                tagCollection.Insert(tag);
+                tagCollection.EnsureIndex(x => x.TagName);
+                tagCollection.EnsureIndex(x => x.ProjectId);
             }
         }
 
-        public void DeleteDB()
+        public void DeleteDatabase()
         {
             foreach (var item in db.FileStorage.FindAll())
             {
-                db.FileStorage.Delete(item.Id);                
+                db.FileStorage.Delete(item.Id);
             }
         }
 

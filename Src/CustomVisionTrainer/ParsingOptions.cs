@@ -29,6 +29,5 @@ namespace CustomVisionTrainer
 
         [SwitchArgument('d', "delete", defaultValue: false, Description = "Set to just delete images and tags and exits", Optional = true)]
         public bool Delete { get; set; }
-
     }
 }
