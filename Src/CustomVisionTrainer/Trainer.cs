@@ -35,7 +35,7 @@ namespace CustomVisionTrainer
                 try
                 {
                     await DeleteImagesAndTagsAsync(options, trainingApi);
-                    storageImages.DeleteDatabase();
+                    storageImages.DeleteAllProjectEntries(options.ProjectId);
                     Console.WriteLine("Images and tags successfully deleted.");
                 }
                 catch
