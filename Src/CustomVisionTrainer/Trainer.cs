@@ -1,4 +1,5 @@
-﻿using CustomVisionTrainer.Storage;
+﻿using CustomVisionTrainer.Extensions;
+using CustomVisionTrainer.Storage;
 using ImageMagick;
 using Microsoft.Cognitive.CustomVision.Training;
 using Microsoft.Cognitive.CustomVision.Training.Models;
@@ -7,6 +8,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Threading.Tasks;
 
 namespace CustomVisionTrainer
@@ -24,41 +26,113 @@ namespace CustomVisionTrainer
             TimeSpan.FromSeconds(600)
         };
 
+        public static string BaseUri = "https://{0}.api.cognitive.microsoft.com/customvision/v1.2/Training";
+
         public static async Task TrainAsync(ParsingOptions options)
         {
             // Create the Api, passing in the training key
-            var trainingApi = new TrainingApi { ApiKey = options.TrainingKey };
+            var trainingApi = new TrainingApi(new Uri(string.Format(BaseUri, options.Region))) { ApiKey = options.TrainingKey };
             var storageImages = new CognitiveServiceTrainerStorage();
-
-            if (options.Delete)
-            {
-                try
-                {
-                    await DeleteImagesAndTagsAsync(options, trainingApi);
-                    storageImages.DeleteAllProjectEntries(options.ProjectId);
-                    Console.WriteLine("Images and tags successfully deleted.");
-                }
-                catch
-                {
-                }
-
-                if (string.IsNullOrEmpty(options.Folder))
-                {
-                    return;
-                }
-            }
-
-            var fullFolder = Path.GetFullPath(options.Folder);
-            if (!Directory.Exists(fullFolder))
-            {
-                Console.WriteLine($"Error: folder \"{fullFolder}\" does not exist.");
-                Console.WriteLine(string.Empty);
-                return;
-            }
 
             try
             {
-                //await DeleteImagesAndTagsAsync(options, trainingApi);
+                // Checks what kind of operation the user wants to perform.
+
+                if (options.Delete)
+                {
+                    try
+                    {
+                         await DeleteImagesAndTagsAsync(options, trainingApi);
+                         storageImages.DeleteAllProjectEntries(options.ProjectId);
+                         Console.WriteLine("Images and tags successfully deleted.");
+                    }
+                    catch
+                    {
+                    }
+
+                    return;
+                }
+
+                if (options.ListProjects)
+                {
+                    Console.Write("Getting Custom Vision projects... ");
+                    var projects = await trainingApi.GetProjectsAsync();
+
+                    Console.Write($"{projects.Count} project(s) found.");
+                    Console.WriteLine(Environment.NewLine);
+
+                    foreach (var project in projects)
+                    {
+                        Console.WriteLine(project.Name);
+                        Console.WriteLine(project.Id);
+                        Console.WriteLine();
+                    }
+
+                    return;
+                }
+
+                // Performs some checks before image uploading/downloading.
+                if (string.IsNullOrWhiteSpace(options.Folder))
+                {
+                    Console.WriteLine($"Error: folder not specified.");
+                    Console.WriteLine();
+                    return;
+                }
+
+                if (options.ProjectId == Guid.Empty)
+                {
+                    Console.WriteLine($"Error: project ID not specified.");
+                    Console.WriteLine();
+                    return;
+                }
+
+                var fullFolder = Path.GetFullPath(options.Folder);
+                if (!Directory.Exists(fullFolder))
+                {
+                    Console.WriteLine($"Error: folder \"{fullFolder}\" does not exist.");
+                    Console.WriteLine();
+                    return;
+                }
+
+                if (options.GetImages)
+                {
+                    var tags = await trainingApi.GetTagsAsync(options.ProjectId);
+
+                    var client = new HttpClient();
+                    IList<Image> images = new List<Image>();
+
+                    // The user wants to download images.
+                    var skip = 0;
+                    while ((images = await trainingApi.GetTaggedImagesAsync(options.ProjectId, take: 50, skip: skip)).Any())
+                    {
+                        foreach (var image in images)
+                        {
+                            var tagName = tags.Tags.First(t => t.Id == image.Tags.First().TagId).Name;
+                            var folder = Path.Combine(fullFolder, tagName);
+                            if (!Directory.Exists(folder))
+                            {
+                                Console.WriteLine($"Creating folder '{tagName}'...");
+                                Directory.CreateDirectory(folder);
+                            }
+
+                            var fileName = $"{image.Id}.jpg";
+                            Console.WriteLine($"Getting '{fileName}'...");
+
+                            var data = await client.GetByteArrayAsync(image.ImageUri);
+                            var fullFileName = Path.Combine(folder, fileName);
+                            await File.WriteAllBytesAsync(fullFileName, data);
+                        }
+
+                        skip += 50;
+                    }
+
+                    Console.WriteLine("Images download successfully.");
+                    Console.WriteLine();
+
+                    return;
+                }
+
+                // This is the standard upload and tag operation.
                 foreach (var dir in Directory.EnumerateDirectories(fullFolder).Where(f => !Path.GetFileName(f).StartsWith("!")))
                 {
                     var tagName = Path.GetFileName(dir).ToLower();
@@ -66,15 +140,16 @@ namespace CustomVisionTrainer
 
                     IList<Image> imagesAlreadyExists = new List<Image>();
                     IList<Image> imagesAlreadyExistsTmp = new List<Image>();
-                    var skip = 0;
 
+                    var skip = 0;
                     while ((imagesAlreadyExistsTmp = await trainingApi.GetTaggedImagesAsync(options.ProjectId, tagIds: new[] { tagName }, take: 50, skip: skip)).Any())
                     {
-                        skip += 50;
                         foreach (var item in imagesAlreadyExistsTmp)
                         {
                             imagesAlreadyExists.Add(item);
                         }
+
+                        skip += 50;
                     }
 
                     Console.WriteLine($"\nCreating tag '{tagName}'...");
@@ -120,7 +195,7 @@ namespace CustomVisionTrainer
                             using (var input = new MemoryStream(File.ReadAllBytes(image)))
                             {
                                 imageToUpload = options.Width.GetValueOrDefault() > 0 || options.Height.GetValueOrDefault() > 0
-                                    ? await ResizeImageAsync(input, options.Width.GetValueOrDefault(), options.Height.GetValueOrDefault())
+                                    ? await input.ResizeImageAsync(options.Width.GetValueOrDefault(), options.Height.GetValueOrDefault())
                                     : input;
 
                                 tempImages.Add(new ImageDto
@@ -209,10 +284,10 @@ namespace CustomVisionTrainer
                                 {
                                     var uploadedImage = img.Image;
                                     var tagsToStore = uploadedImage.Tags?.Select(x => new Storage.Collections.StorageImageTag()
-                                                        {
-                                                            Created = x.Created,
-                                                            TagId = x.TagId
-                                                        }).ToList();
+                                    {
+                                        Created = x.Created,
+                                        TagId = x.TagId
+                                    }).ToList();
 
                                     storageImages.InsertImage(new Storage.Collections.StorageImage()
                                     {
@@ -237,42 +312,6 @@ namespace CustomVisionTrainer
                     });
 
                 await Task.Delay(500);
-            }
-        }
-
-        private static byte[] ToByteArray(this Stream input)
-        {
-            input.Position = 0;
-            var buffer = new byte[16 * 1024];
-            using (var ms = new MemoryStream())
-            {
-                int read;
-                while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
-                {
-                    ms.Write(buffer, 0, read);
-                }
-
-                return ms.ToArray();
-            }
-        }
-
-        private static Task<Stream> ResizeImageAsync(Stream image, int width, int height)
-        {
-            // Read image from stream
-            using (var output = new MagickImage(image))
-            {
-                // The image will be resized to fit inside the specified size.
-                var size = new MagickGeometry(width, height)
-                {
-                    Greater = true
-                };
-                output.Resize(size);
-
-                var ms = new MemoryStream();
-                output.Write(ms);
-                ms.Position = 0;
-
-                return Task.FromResult(ms as Stream);
             }
         }
 
