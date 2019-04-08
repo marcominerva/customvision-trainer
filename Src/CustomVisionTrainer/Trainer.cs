@@ -42,9 +42,9 @@ namespace CustomVisionTrainer
                 {
                     try
                     {
-                        await DeleteImagesAndTagsAsync(options, trainingApi);
-                        storageImages.DeleteDatabase();
-                        Console.WriteLine("Images and tags successfully deleted.");
+                         await DeleteImagesAndTagsAsync(options, trainingApi);
+                         storageImages.DeleteAllProjectEntries(options.ProjectId);
+                         Console.WriteLine("Images and tags successfully deleted.");
                     }
                     catch
                     {

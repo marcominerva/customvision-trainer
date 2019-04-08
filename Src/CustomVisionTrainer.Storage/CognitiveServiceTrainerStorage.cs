@@ -56,7 +56,13 @@ namespace CustomVisionTrainer.Storage
             }
         }
 
-        public void DeleteDatabase()
+        public void DeleteAllProjectEntries(Guid projectId)
+        {
+            storageCollection.Delete(x => x.ProjectId == projectId);
+            tagCollection.Delete(x => x.ProjectId == projectId);
+        }
+
+        public void DeleteAllDatabases()
         {
             foreach (var item in db.FileStorage.FindAll())
             {
